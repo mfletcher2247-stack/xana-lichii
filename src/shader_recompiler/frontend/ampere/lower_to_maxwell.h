@@ -2527,13 +2527,18 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                     source_b + 1 >= register_limit || (dest != 255 && dest + 1 >= register_limit) ||
                     (second_dest != 255 && second_dest + 1 >= register_limit))
                     return fail(index, "native per-tap gather operands");
-                // Keep the whole program straight-line: even a branch outside the definition
-                // window could jump past a constant definition. Known write sets also identify
-                // non-branching instructions; unknown opcodes still fail closed.
                 const auto linear_writes = [&](const Instruction& instruction) -> std::optional<u32> {
                     switch (instruction.Bits(0, 12)) {
                     case 0x326: case 0x307: // IPA / FRND
+                    case 0x224: case 0x624: // IMAD low word / register or cbuf move
+                    case 0xa11: // LEA.HI with a constant-buffer multiplier writes one word.
+                    case 0x831: case 0x832: // Packed HFMA2 / HMUL2
+                    case 0x827: // IMAD.HI immediate writes only the high word.
                         return instruction.Bits(16, 8) == 255 ? 0U : 1U;
+                    case 0x805: // CS2R SRZ writes a pair.
+                        return 2;
+                    case 0x947: case 0x945: case 0x941: case 0x942: case 0x948: case 0x94d:
+                    case 0x91a: // DEPBAR
                     case 0x386: case 0x986: // STG
                     case 0x992: case 0x9ab: // MEMBAR / ERRBAR
                         return 0;
@@ -2541,20 +2546,51 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                         return write_count(instruction);
                     }
                 };
+                // All possible direct entries are collected above, including reconvergence
+                // targets. Calls and indirect control flow are deliberately outside this proof.
                 bool terminal = false;
                 for (u32 pc = 0; pc < code.size(); ++pc) {
                     const auto& instruction = code[pc];
                     if (instruction.Bits(12, 4) == 15) continue;
                     const u32 op = instruction.Bits(0, 12);
-                    if (op == 0x94d && instruction.Bits(12, 4) == 7) {
-                        terminal = true;
-                        break;
+                    if (op == 0x94d) {
+                        terminal |= instruction.Bits(12, 4) == 7 &&
+                                    instruction.Bits(84, 2) == 0 && instruction.Bits(87, 4) == 7;
+                        continue;
                     }
-                    if (op != 0xb63 && op != 0xf63 && !linear_writes(instruction))
+                    if (op == 0x947 || op == 0x945) {
+                        if (bounded_control && direct_targets[pc] != ~0U) continue;
+                        return fail(pc, "native per-tap gather control-flow proof");
+                    }
+                    if (op == 0x941 || op == 0x942 || op == 0x948) continue;
+                    if (((op & 0x1ff) >= 0x140 && (op & 0x1ff) <= 0x15f) &&
+                        op != 0x348 && op != 0x95b)
                         return fail(pc, "native per-tap gather control-flow proof");
                 }
                 if (!terminal) return fail(index, "native per-tap gather terminal proof");
+                const auto immediate_move = [](const Instruction& instruction) {
+                    const u32 op = instruction.Bits(0, 12);
+                    return (op == 0x802 && instruction.Bits(24, 8) == 0 &&
+                            instruction.words[2] == 0x00000f00) ||
+                           (op == 0x424 && instruction.Bits(24, 8) == 255 &&
+                            instruction.words[2] == 0x078e00ff);
+                };
+                const auto preserves_predicate = [](const Instruction& instruction, u32 pred) {
+                    switch (instruction.Bits(0, 12)) {
+                    case 0x224: case 0x424: case 0x624: case 0x824:
+                    case 0x210: case 0x810: case 0x212: case 0x812: case 0x81c:
+                        return instruction.Bits(81, 3) != pred && instruction.Bits(84, 3) != pred;
+                    case 0xb63: case 0xf63:
+                        return instruction.Bits(81, 3) == 7;
+                    case 0x802: case 0x805: case 0x819: case 0x823: case 0x91a:
+                    case 0x947: case 0x945: case 0x941: case 0x942: case 0x948: case 0x94d:
+                        return true;
+                    default:
+                        return false;
+                    }
+                };
                 std::array<std::optional<u32>, 2> packed_offsets;
+                std::array<u32, 2> offset_definitions{};
                 for (u32 cursor = index; cursor > 0 && (!packed_offsets[0] || !packed_offsets[1]);) {
                     const auto& definition = code[--cursor];
                     if (definition.Bits(12, 4) == 15) continue;
@@ -2579,14 +2615,36 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                     for (u32 i = 0; i < 2; ++i) {
                         if (packed_offsets[i] || source_b + i < target || source_b + i >= target + *written)
                             continue;
-                        if (op != 0x802 || definition.Bits(12, 4) != 7 || definition.Bits(24, 8) ||
-                            definition.words[2] != 0x00000f00)
+                        const u32 def_predicate = definition.Bits(12, 4);
+                        if (!immediate_move(definition) ||
+                            (def_predicate != 7 && def_predicate != native_predicate))
                             return fail(cursor, "native per-tap gather nonconstant offsets");
+                        if (def_predicate != 7) {
+                            // A matching predicate at the definition is useful only while its
+                            // value is unchanged on every path to this gather.
+                            for (u32 pc = cursor + 1; pc < index; ++pc) {
+                                const auto& between = code[pc];
+                                if (between.Bits(12, 4) != 15 &&
+                                    !preserves_predicate(between, native_predicate & 7U))
+                                    return fail(pc, "native per-tap gather predicate proof");
+                            }
+                        }
                         packed_offsets[i] = definition.words[1];
+                        offset_definitions[i] = cursor;
+                    }
+                }
+                if (!packed_offsets[0] || !packed_offsets[1])
+                    return fail(index, "native per-tap gather missing offsets");
+                // Each definition starts a region ending at the gather. No edge from outside
+                // may enter after that definition. All writes inside were checked above, so
+                // internal branches and loops cannot bypass the value or change it unnoticed.
+                for (const auto& [from, to] : control_edges) {
+                    for (u32 definition : offset_definitions) {
+                        if (to > definition && to <= index && (from < definition || from > index))
+                            return fail(from, "native per-tap gather entry bypasses offsets");
                     }
                 }
                 for (const auto& packed : packed_offsets) {
-                    if (!packed) return fail(index, "native per-tap gather missing offsets");
                     // Each byte is a signed 6-bit offset; the gather reads only the low six bits.
                     for (u32 shift = 0; shift < 32; shift += 8) {
                         const u32 value = (*packed >> shift) & 255;
