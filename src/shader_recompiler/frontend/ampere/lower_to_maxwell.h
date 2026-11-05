@@ -2512,21 +2512,31 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                     source_b + 1 >= register_limit || (dest != 255 && dest + 1 >= register_limit) ||
                     (second_dest != 255 && second_dest + 1 >= register_limit))
                     return fail(index, "native per-tap gather operands");
-                // The backward scan below is only sound for straight-line programs: every
-                // instruction up to the terminal EXIT must be one of these non-branching forms.
+                // Keep the whole program straight-line: even a branch outside the definition
+                // window could jump past a constant definition. Known write sets also identify
+                // non-branching instructions; unknown opcodes still fail closed.
+                const auto linear_writes = [&](const Instruction& instruction) -> std::optional<u32> {
+                    switch (instruction.Bits(0, 12)) {
+                    case 0x326: case 0x307: // IPA / FRND
+                        return instruction.Bits(16, 8) == 255 ? 0U : 1U;
+                    case 0x386: case 0x986: // STG
+                    case 0x992: case 0x9ab: // MEMBAR / ERRBAR
+                        return 0;
+                    default:
+                        return write_count(instruction);
+                    }
+                };
                 bool terminal = false;
-                for (const auto& instruction : code) {
+                for (u32 pc = 0; pc < code.size(); ++pc) {
+                    const auto& instruction = code[pc];
                     if (instruction.Bits(12, 4) == 15) continue;
                     const u32 op = instruction.Bits(0, 12);
-        uses_uniform_bank |= op == 0x83b && instruction.Bits(91, 1);
                     if (op == 0x94d && instruction.Bits(12, 4) == 7) {
                         terminal = true;
                         break;
                     }
-                    if (op != 0x326 && op != 0x802 && op != 0x307 && op != 0x421 &&
-                        op != 0xa20 && op != 0xb63 && op != 0x221 && op != 0x823 &&
-                        op != 0x423 && op != 0x223 && op != 0x308 && op != 0x220 && op != 0x820)
-                        return fail(index, "native per-tap gather control-flow proof");
+                    if (op != 0xb63 && op != 0xf63 && !linear_writes(instruction))
+                        return fail(pc, "native per-tap gather control-flow proof");
                 }
                 if (!terminal) return fail(index, "native per-tap gather terminal proof");
                 std::array<std::optional<u32>, 2> packed_offsets;
@@ -2534,26 +2544,29 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                     const auto& definition = code[--cursor];
                     if (definition.Bits(12, 4) == 15) continue;
                     const u32 op = definition.Bits(0, 12), target = definition.Bits(16, 8);
-                    if (op == 0xb63) {
+                    if (op == 0xb63 || op == 0xf63) {
                         const u32 count = static_cast<u32>(std::popcount(definition.Bits(72, 4)));
                         const u32 high = definition.Bits(64, 8);
+                        const bool packed = definition.Bits(79, 1) != 0;
+                        const u32 first_count = packed ? 1U : high == 255 ? count : std::min(count, 2U);
+                        const u32 second_count = packed ? 1U : count - first_count;
                         for (u32 i = 0; i < 2; ++i) {
                             if (packed_offsets[i]) continue;
                             const u32 reg = source_b + i;
-                            if ((target != 255 && reg >= target &&
-                                 reg < target + (high == 255 ? count : (std::min)(count, 2U))) ||
-                                (high != 255 && count > 2 && reg >= high && reg < high + count - 2))
-                                return fail(index, "native per-tap gather offset clobber");
+                            if ((target != 255 && reg >= target && reg < target + first_count) ||
+                                (high != 255 && reg >= high && reg < high + second_count))
+                                return fail(cursor, "native per-tap gather offset clobber");
                         }
                         continue;
                     }
-                    if (op != 0x802 && op != 0x307 && op != 0x421 && op != 0xa20)
-                        return fail(index, "native per-tap gather offset proof");
+                    const auto written = linear_writes(definition);
+                    if (!written) return fail(cursor, "native per-tap gather offset proof");
                     for (u32 i = 0; i < 2; ++i) {
-                        if (packed_offsets[i] || target != source_b + i) continue;
+                        if (packed_offsets[i] || source_b + i < target || source_b + i >= target + *written)
+                            continue;
                         if (op != 0x802 || definition.Bits(12, 4) != 7 || definition.Bits(24, 8) ||
                             definition.words[2] != 0x00000f00)
-                            return fail(index, "native per-tap gather nonconstant offsets");
+                            return fail(cursor, "native per-tap gather nonconstant offsets");
                         packed_offsets[i] = definition.words[1];
                     }
                 }
