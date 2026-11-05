@@ -2503,6 +2503,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                            (insn.words[3] & 0xc00001ffU))) ||
                 (half && (bindless || offsets || !insn.Bits(60, 1) || insn.Bits(80, 1) ||
                           insn.Bits(91, 1) ||
+                          (per_tap && (dest == second_dest || (insn.words[3] & 0xc00001ffU))) ||
                           (source_b != 255 && source_b >= register_limit) ||
                           mask != 15 || dest >= register_limit || second_dest >= register_limit)) ||
                 (offsets && (bindless || source_b == 255 || (source_a != 255 && source_a >= 245))) ||
