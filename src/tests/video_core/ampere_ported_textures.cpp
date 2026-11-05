@@ -428,3 +428,82 @@ TEST_CASE("Ampere per-tap gather diagnostics name real control flow and reject b
     REQUIRE(unfamiliar.error == "native per-tap gather control-flow proof");
     REQUIRE(unfamiliar.error_offset == 3 * sizeof(Instruction));
 }
+
+TEST_CASE("Ampere depth compare gathers lower to Maxwell TLD4.DC",
+          "[video_core][ampere][gather]") {
+    // OoT gfx 0x1650: 2D, no offsets, bit 78 set, x/y in R24/R25, reference in R28.
+    const Instruction gather{{0x180c7b63, 0x30800e1c, 0x001e4f0e, 0x000f4200}};
+    const auto lowered = LowerToMaxwell(std::array{gather, Exit});
+    INFO(lowered.error);
+    REQUIRE(lowered);
+    REQUIRE(lowered.required_texture_buffer == 2);
+    const u64 pred = 7ULL << 16;
+    const std::array<u64, 9> expected{{
+        Copy(pred, 250, 24),
+        Copy(pred, 251, 25),
+        Copy(pred, 246, 28),
+        0xc800000000000000ULL | pred | 250 | (250ULL << 8) | (246ULL << 20) | (2ULL << 28) |
+            (15ULL << 31) | (0xeULL << 36) | (1ULL << 50) | (7ULL << 51),
+        Copy(pred, 12, 250),
+        Copy(pred, 13, 251),
+        Copy(pred, 14, 252),
+        Copy(pred, 15, 253),
+        0xe30000000007000fULL,
+    }};
+    REQUIRE(std::equal(expected.begin(), expected.end(), lowered.instructions.begin()));
+    REQUIRE(lowered.instructions.size() == expected.size());
+}
+
+TEST_CASE("Ampere depth compare gathers preserve guards and destination layouts",
+          "[video_core][ampere][gather]") {
+    const Instruction captured{{0x180c7b63, 0x30800e1c, 0x001e4f0e, 0x000f4200}};
+    for (const u32 guard : {1U, 7U, 9U}) {
+        for (const u32 second : {14U, 255U}) {
+            auto gather = captured;
+            gather.words[0] = (gather.words[0] & ~0xf000U) | (guard << 12);
+            gather.words[2] = (gather.words[2] & ~255U) | second;
+            const auto lowered = LowerToMaxwell(std::array{gather, Exit});
+            INFO(lowered.error);
+            REQUIRE(lowered);
+            REQUIRE(lowered.instructions.size() == 9);
+            for (u32 i = 0; i < 8; ++i)
+                REQUIRE(((lowered.instructions[i] >> 16) & 15) == guard);
+            for (u32 i = 0; i < 4; ++i)
+                REQUIRE(lowered.instructions[4 + i] == Copy(u64{guard} << 16, 12 + i, 250 + i));
+        }
+    }
+}
+
+TEST_CASE("Ampere depth compare gathers reject unproven modes and unsafe register ranges",
+          "[video_core][ampere][gather]") {
+    const Instruction captured{{0x180c7b63, 0x30800e1c, 0x001e4f0e, 0x000f4200}};
+    for (const u32 bit : {59U, 60U, 72U, 76U, 77U, 79U, 80U, 81U, 89U, 91U, 96U, 126U, 127U}) {
+        auto invalid = captured;
+        invalid.words[bit / 32] ^= 1U << (bit % 32);
+        INFO("bit " << bit);
+        REQUIRE_FALSE(LowerToMaxwell(std::array{invalid, Exit}));
+    }
+    for (const u32 dimension : {0U, 3U, 5U, 6U}) {
+        auto invalid = captured;
+        invalid.words[1] = (invalid.words[1] & ~(7U << 29)) | (dimension << 29);
+        REQUIRE_FALSE(LowerToMaxwell(std::array{invalid, Exit}));
+    }
+    auto bindless = captured;
+    bindless.words[0] = (bindless.words[0] & ~0xfffU) | 0xf63U;
+    bindless.words[2] |= 1U << 27;
+    REQUIRE_FALSE(LowerToMaxwell(std::array{bindless, Exit}));
+    for (const u32 field : {16U, 24U, 32U, 64U}) {
+        auto invalid = captured;
+        const u32 reg = field == 32 ? 246U : 245U;
+        invalid.words[field / 32] =
+            (invalid.words[field / 32] & ~(255U << (field % 32))) | (reg << (field % 32));
+        REQUIRE_FALSE(LowerToMaxwell(std::array{invalid, Exit}));
+    }
+    auto overlap = captured;
+    overlap.words[2] = (overlap.words[2] & ~255U) | 13U;
+    REQUIRE_FALSE(LowerToMaxwell(std::array{overlap, Exit}));
+    auto unsplit = captured;
+    unsplit.words[0] = (unsplit.words[0] & ~0xff0000U) | (244U << 16);
+    unsplit.words[2] |= 255U;
+    REQUIRE_FALSE(LowerToMaxwell(std::array{unsplit, Exit}));
+}
