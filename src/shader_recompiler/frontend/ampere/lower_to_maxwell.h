@@ -240,14 +240,23 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
     // through to the EXIT (0x941/0x942/0x948) is part of the stub.
     const auto nonreturning_stub = [&](u32 target) {
         if (target >= control_limit) return false;
+        const auto branch_through = [](const Instruction& instruction, u32 pc) {
+            if (instruction.Bits(0, 12) != 0x941 && instruction.Bits(0, 12) != 0x942 &&
+                instruction.Bits(0, 12) != 0x948)
+                return false;
+            const u64 raw = instruction.words[1] | (u64{instruction.words[2] & 0x3ffff} << 32);
+            const s64 relative = static_cast<s64>(raw << 14) >> 14;
+            return s64{pc} * 16 + 16 + relative == s64{pc + 1} * 16;
+        };
         for (u32 pc = target; pc < control_limit; ++pc) {
-            if (pc != target && control_entries[pc]) return false;
             const auto& instruction = code[pc];
             const u32 op = instruction.Bits(0, 12);
             if (op == 0x94d)
                 return instruction.Bits(12, 4) == 7 && instruction.Bits(84, 2) == 0 &&
                        instruction.Bits(87, 4) == 7;
-            if ((op == 0x941 || op == 0x942 || op == 0x948) && direct_targets[pc] == pc + 1) continue;
+            // A branch through to the next instruction is part of the stub; the region holds nothing else,
+            // so an entry into the middle of it only reaches the same EXIT sooner.
+            if (branch_through(instruction, pc)) continue;
             return false;
         }
         return false;
