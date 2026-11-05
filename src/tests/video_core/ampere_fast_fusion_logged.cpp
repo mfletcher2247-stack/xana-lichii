@@ -360,6 +360,10 @@ struct HalfIR {
                 visitor.MOV_reg(word);
             else if ((word >> 48) == 0x5c28)
                 visitor.SHR_reg(word);
+            else if (((word >> 48) & 0xfffe) == 0x3828)
+                visitor.SHR_imm(word);
+            else if ((word >> 48) == 0x36f8)
+                visitor.SHF_l_imm(word);
             else if ((word >> 48) == 0x38f8)
                 visitor.SHF_r_imm(word);
             else if ((word >> 48) == 0x5c48)
@@ -521,6 +525,8 @@ struct HalfIR {
             return std::min(u32(a(0)), u32(a(1)));
         case IR::Opcode::ShiftRightLogical64:
             return a(0) >> (a(1) & 63);
+        case IR::Opcode::ShiftLeftLogical64:
+            return a(0) << (a(1) & 63);
         case IR::Opcode::IEqual:
             return a(0) == a(1);
         case IR::Opcode::INeg32:
@@ -619,6 +625,41 @@ TEST_CASE("Ocarina 64-bit right shifts include both words and clamp at 64",
                 }
                 CHECK(translation.registers[uniform ? 223 : 43] ==
                       (shift >= 64 ? 0U : u32(input >> shift)));
+            }
+        }
+    }
+}
+
+TEST_CASE("Ocarina LEA.HI subtraction agrees with the Maxwell frontend",
+          "[video_core][ampere][oot]") {
+    for (const u32 opcode : {0x211U, 0x811U, 0xc11U}) {
+        for (const u32 shift : {0U, 1U, 15U, 30U, 31U}) {
+            for (const u32 high : {255U, 2U}) {
+                Instruction instruction{{0x01017000U | opcode, 0x80000000,
+                                         0x078f0000U | (shift << 11) | high, 0}};
+                const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
+                REQUIRE(lowered);
+                HalfIR translation{lowered.instructions};
+                for (const u32 low : {0U, 1U, 0x7fffffffU, 0x80000000U, 0xffffffffU}) {
+                    for (const u32 b : {0U, 1U, 0x80000000U, 0xffffffffU}) {
+                        CAPTURE(opcode, shift, high, low, b);
+                        translation.registers.fill(0xdeadbeef);
+                        translation.registers[1] = low;
+                        translation.registers[2] = 0x89abcdef;
+                        translation.registers[opcode == 0xc11 ? 216 : 0] = b;
+                        translation.values.clear();
+                        for (const auto& inst : translation.block.Instructions()) {
+                            if (inst.GetOpcode() == IR::Opcode::SetRegister)
+                                translation.registers.at(static_cast<size_t>(inst.Arg(0).Reg())) =
+                                    u32(translation.Value(inst.Arg(1)));
+                            else
+                                translation.values.emplace(&inst, translation.Evaluate(inst));
+                        }
+                        const u64 packed = u64{low} | (high == 255 ? 0 : 0x89abcdef00000000ULL);
+                        const u32 base = opcode == 0x811 ? 0x80000000U : 0U - b;
+                        CHECK(translation.registers[1] == u32(packed >> (32 - shift)) + base);
+                    }
+                }
             }
         }
     }

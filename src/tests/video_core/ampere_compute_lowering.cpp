@@ -24,6 +24,37 @@ TEST_CASE("Ampere LEA.HI with a constant base and no carry lowers", "[video_core
     REQUIRE(std::find(out.begin(), out.end(), 0x5c1000000fb7fa01ULL) != out.end());
 }
 
+TEST_CASE("Ocarina captured LEA.HI subtracts the B register", "[video_core][ampere][oot]") {
+    const Instruction captured{{0x01017211, 0x80000000, 0x078ff0ff, 0x000fca00}};
+    const auto lowered = LowerToMaxwell(std::array{captured, Exit});
+    REQUIRE(lowered);
+    REQUIRE(lowered.instructions.size() == 3);
+    CHECK(lowered.instructions[0] == 0x38280000002701faULL);
+    CHECK(lowered.instructions[1] == 0x5c1100000007fa01ULL);
+}
+
+TEST_CASE("LEA.HI B modifiers keep operand and carry forms distinct", "[video_core][ampere]") {
+    for (const u32 opcode : {0x211U, 0xa11U, 0xc11U}) {
+        Instruction instruction{{0x01017000U | opcode, 0x80000000, 0x078ff0ff, 0}};
+        const auto lowered = LowerToMaxwell(std::array{instruction, Exit});
+        REQUIRE(lowered);
+        const u32 b = opcode == 0xa11 ? 251 : opcode == 0xc11 ? 216 : 0;
+        CHECK(lowered.instructions[lowered.instructions.size() - 2] ==
+              (0x5c1100000007fa01ULL | (u64{b} << 20)));
+        // .X uses one's complement on B, not two's-complement negation.
+        instruction.words[2] |= 1U << 10;
+        CHECK_FALSE(LowerToMaxwell(std::array{instruction, Exit}));
+        instruction.words[2] &= ~(1U << 10);
+        instruction.words[1] |= 1U << 30;
+        CHECK_FALSE(LowerToMaxwell(std::array{instruction, Exit}));
+    }
+    // In the immediate form bit 63 is part of the value, not a modifier.
+    const Instruction immediate{{0x01017811, 0x80000000, 0x078ff0ff, 0}};
+    const auto lowered = LowerToMaxwell(std::array{immediate, Exit});
+    REQUIRE(lowered);
+    CHECK(lowered.instructions[lowered.instructions.size() - 2] == 0x5c1000000fb7fa01ULL);
+}
+
 TEST_CASE("Ampere LEA.HI with a constant base still rejects a carry out", "[video_core][ampere]") {
     // The same LEA.HI writing a carry out to P0 has no lowering yet.
     Instruction carry{{0x11017a11, 0x00c00000, 0x078ff0ff, 0x000fe400}};
