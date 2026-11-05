@@ -349,12 +349,15 @@ TEST_CASE("Ampere half per-tap gathers still require proven offsets and supporte
     auto code = PerTapProgram();
     code[2].words[2] |= 1U << 15;
     REQUIRE(LowerToMaxwell(code));
-    for (const u32 bit : {60U, 72U, 76U, 78U, 80U, 81U, 89U, 91U}) {
+    for (const u32 bit : {60U, 72U, 76U, 78U, 80U, 81U, 89U, 91U, 96U, 126U, 127U}) {
         auto invalid = code;
         invalid[2].words[bit / 32] ^= 1U << (bit % 32);
         INFO("bit " << bit);
         REQUIRE_FALSE(LowerToMaxwell(invalid));
     }
+    auto overlap = code;
+    overlap[2].words[2] = (overlap[2].words[2] & ~255U) | overlap[2].Bits(16, 8);
+    REQUIRE_FALSE(LowerToMaxwell(overlap));
     REQUIRE(LowerToMaxwell(std::array{code[2], Exit}).error ==
             "native per-tap gather missing offsets");
     code[0].words[1] = 32;
@@ -427,6 +430,25 @@ TEST_CASE("Ampere per-tap gather diagnostics name real control flow and reject b
     const auto unfamiliar = LowerToMaxwell(std::array{code[0], code[1], code[2], unknown, Exit});
     REQUIRE(unfamiliar.error == "native per-tap gather control-flow proof");
     REQUIRE(unfamiliar.error_offset == 3 * sizeof(Instruction));
+}
+
+TEST_CASE("Ampere per-tap offset proofs use packed half gather write widths",
+          "[video_core][ampere][gather][half_texture]") {
+    const auto code = PerTapProgram();
+    auto half = code[2];
+    half.words[0] = (half.words[0] & ~0xff0000U) | (6U << 16);
+    half.words[2] = (half.words[2] & ~255U) | 7U | (1U << 15);
+    // The half gather writes only R6/R7, not the offset constants at R8/R9.
+    REQUIRE(LowerToMaxwell(std::array{code[0], code[1], half, code[2], Exit}));
+    for (const u32 field : {16U, 64U}) {
+        auto clobber = half;
+        clobber.words[field / 32] =
+            (clobber.words[field / 32] & ~(255U << (field % 32))) | (8U << (field % 32));
+        const auto rejected = LowerToMaxwell(
+            std::array{code[0], code[1], clobber, code[2], Exit});
+        REQUIRE(rejected.error == "native per-tap gather offset clobber");
+        REQUIRE(rejected.error_offset == 2 * sizeof(Instruction));
+    }
 }
 
 TEST_CASE("Ampere depth compare gathers lower to Maxwell TLD4.DC",
