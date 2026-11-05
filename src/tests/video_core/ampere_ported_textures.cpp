@@ -89,9 +89,12 @@ TEST_CASE("Ampere per-tap gathers prove constants across unrelated arithmetic an
     clobber = code;
     clobber[3].words[2] = 0x041e0f06;
     REQUIRE(LowerToMaxwell(clobber).error == "native per-tap gather offset clobber");
+    // A branch cannot write the pair, so it no longer hides the proven constants.
     auto branch = code;
     branch[2].words = {0x00007947, 0, 0x03800000, 0};
-    REQUIRE(LowerToMaxwell(branch).error == "native per-tap gather control-flow proof");
+    const auto branched = LowerToMaxwell(branch);
+    INFO(branched.error);
+    REQUIRE(branched);
 }
 
 TEST_CASE("Ampere per-tap gathers reject unproven offsets and unsupported modes",
@@ -108,7 +111,7 @@ TEST_CASE("Ampere per-tap gathers reject unproven offsets and unsupported modes"
             REQUIRE(lowered.error == "native per-tap gather offset range");
         }
     }
-    for (const u32 bit : {60U, 72U, 76U, 78U, 79U, 80U, 81U, 89U, 91U}) {
+    for (const u32 bit : {60U, 72U, 76U, 78U, 80U, 81U, 89U, 91U}) {
         auto invalid = PerTapProgram();
         invalid[2].words[bit / 32] ^= 1U << (bit % 32);
         INFO("bit " << bit);
@@ -138,8 +141,15 @@ TEST_CASE("Ampere per-tap gathers reject unproven offsets and unsupported modes"
     REQUIRE_FALSE(LowerToMaxwell(invalid));
     const Instruction branch{{0x00007947, 0, 0x03800000, 0}};
     const auto program = PerTapProgram();
-    REQUIRE_FALSE(LowerToMaxwell(std::array{branch, program[0], program[1], program[2], Exit}));
-    REQUIRE_FALSE(LowerToMaxwell(std::array{program[0], program[1], program[2], branch, Exit}));
+    // Branches around the offsets and the gather keep the proven constants.
+    const auto before = LowerToMaxwell(std::array{branch, program[0], program[1], program[2], Exit});
+    INFO(before.error);
+    REQUIRE(before);
+    const auto after = LowerToMaxwell(std::array{program[0], program[1], program[2], branch, Exit});
+    INFO(after.error);
+    REQUIRE(after);
+    REQUIRE(after.instructions[2] == MoveImmediate(7ULL << 16, 248, 0xff00ff00));
+    REQUIRE(after.instructions[3] == MoveImmediate(7ULL << 16, 249, 0x01000001));
 }
 
 TEST_CASE("Ampere gathers without per-tap offsets keep their previous lowering",
@@ -285,4 +295,100 @@ TEST_CASE("Ampere array depth comparisons support nonlegacy descriptor bindings"
     const auto begin = mixed.instructions.begin() + mixed.source_instruction_offsets[1];
     REQUIRE(std::equal(alternate.begin(), alternate.end(), begin));
     REQUIRE(begin + alternate.size() + 1 == mixed.instructions.end());
+}
+
+TEST_CASE("Ampere depth comparison gathers lower to Maxwell TLD4S",
+          "[video_core][ampere][gather]") {
+    // TLD4 R12 and R14, R24 (x, y), R28 (depth reference), 2D, RGBA, compare (bit 78):
+    // rejected as a texture gather mode in the 040057C02159A000 log.
+    const Instruction compare{{0x180c7b63, 0x30800e1c, 0x001e4f0e, 0x000f4200}};
+    const auto lowered = LowerToMaxwell(std::array{compare, Exit});
+    INFO(lowered.error);
+    REQUIRE(lowered);
+    REQUIRE(lowered.required_texture_buffer == 2);
+    const u64 pred = 7ULL << 16;
+    const std::array<u64, 8> expected{
+        Copy(pred, 250, 24),
+        Copy(pred, 251, 25),
+        Copy(pred, 247, 28),
+        0xdf00000000000000ULL | pred | 250 | (250ULL << 8) | (247ULL << 20) | (252ULL << 28) |
+            (14ULL << 36) | (1ULL << 50) | (0ULL << 52),
+        Copy(pred, 12, 250),
+        Copy(pred, 13, 251),
+        Copy(pred, 14, 252),
+        Copy(pred, 15, 253),
+    };
+    const auto begin = lowered.instructions.begin();
+    REQUIRE(std::equal(expected.begin(), expected.end(), begin));
+    REQUIRE(begin + expected.size() + 1 == lowered.instructions.end());
+    // Component select and the comparison bit reach the encoding.
+    for (u32 component = 0; component < 4; ++component) {
+        for (const bool nodep : {false, true}) {
+            auto instruction = compare;
+            instruction.words[2] = (instruction.words[2] & ~(3U << 23)) | (component << 23);
+            instruction.words[2] = (instruction.words[2] & ~(1U << 26)) | (u32{nodep} << 26);
+            const auto selected = LowerToMaxwell(std::array{instruction, Exit});
+            INFO(selected.error);
+            REQUIRE(selected);
+            const u64 tld4s = selected.instructions[3];
+            REQUIRE((tld4s >> 56) == 0xdf);
+            REQUIRE(((tld4s >> 52) & 3) == component);
+            REQUIRE(((tld4s >> 49) & 1) == (nodep ? 1U : 0U));
+            REQUIRE(((tld4s >> 50) & 1) == 1);
+        }
+    }
+    // Only the 2D, offset-free form has a TLD4S encoding.
+    for (const u32 bit : {76U, 77U, 79U}) {
+        auto invalid = compare;
+        invalid.words[bit / 32] ^= 1U << (bit % 32);
+        INFO("bit " << bit);
+        REQUIRE_FALSE(LowerToMaxwell(std::array{invalid, Exit}));
+    }
+    auto half = compare;
+    half.words[2] ^= 1U << 15;
+    REQUIRE(LowerToMaxwell(std::array{half, Exit}).error == "native depth compare gather mode");
+    auto bindless = compare;
+    bindless.words[0] = 0x180c7f63;
+    REQUIRE_FALSE(LowerToMaxwell(std::array{bindless, Exit}));
+    auto array = compare;
+    array.words[1] = (array.words[1] & ~(7U << 29)) | (5U << 29);
+    REQUIRE_FALSE(LowerToMaxwell(std::array{array, Exit}));
+    // Destination pairs that would overlap cannot both hold four results.
+    auto overlap = compare;
+    overlap.words[2] = (overlap.words[2] & ~0xffU) | 13U;
+    REQUIRE(LowerToMaxwell(std::array{overlap, Exit}).error == "native depth compare gather mode");
+}
+
+TEST_CASE("Ampere half per-tap gathers pack both gather pairs", "[video_core][ampere][half_texture]") {
+    // TLD4.F16.PTP R12 and R13, R10 (x, y), R0 (offsets in R0, R1), 2D, RGBA.
+    const Instruction gather{{0x0a0c7b63, 0x30003000, 0x001eaf0d, 0x000fc200}};
+    const std::array<Instruction, 4> code{{
+        {{0x00007802, 0x01020304, 0x00000f00, 0x000fe400}},
+        {{0x00017802, 0x05060708, 0x00000f00, 0x000fe400}},
+        gather,
+        Exit,
+    }};
+    const auto lowered = LowerToMaxwell(code);
+    INFO(lowered.error);
+    REQUIRE(lowered);
+    REQUIRE(lowered.required_texture_buffer == 0);
+    const u64 pred = 7ULL << 16;
+    const auto begin = lowered.instructions.begin() + lowered.source_instruction_offsets[2];
+    REQUIRE(begin[0] == MoveImmediate(pred, 248, 0x01020304));
+    REQUIRE(begin[1] == MoveImmediate(pred, 249, 0x05060708));
+    REQUIRE(begin[2] == Copy(pred, 250, 10));
+    REQUIRE(begin[3] == Copy(pred, 251, 11));
+    REQUIRE((begin[4] >> 56) == 0xc8);
+    REQUIRE(((begin[4] >> 20) & 255) == 248);
+    REQUIRE(((begin[4] >> 54) & 3) == 2);
+    REQUIRE(((begin[4] >> 31) & 15) == 15);
+    // The gather still returns four floats; two packed halves carry them out.
+    std::array<u32, 2> packed{};
+    u32 count = 0;
+    for (auto it = begin + 5; it != lowered.instructions.end(); ++it) {
+        if ((*it >> 48) == 0x5c18 && count < packed.size()) packed[count++] = *it & 255;
+    }
+    REQUIRE(count == 2);
+    REQUIRE(packed[0] == 12);
+    REQUIRE(packed[1] == 13);
 }
