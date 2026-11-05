@@ -24,3 +24,18 @@ native surface reduction mode, words 0400159f 60008400 0310e000 0001e200.
 B pending: operation field is 6 (OR), whereas existing SURED only accepts ADD.
 C pending: calls at 0x6330/0x6350 target 0x6f00/0x7120 with link R2.
 First setup is at 0x6290; later unrelated capture tail disables the global proof.
+
+A commit: 8f0d580fc20cdfa97f01e0f7f51cd4e593fbb628. Ready intermediate.
+B now lowers the full 0x2290 compute capture to 1792 Maxwell words.
+SURED operation 6 is OR in local Mesa and the existing Maxwell frontend.
+Only ADD and OR pass the U32 direct-descriptor buffer/2D reduction guard.
+Captured words at 0x5040/0x5050/0x50b0 have register/predicate/descriptor tests.
+The frontend test confirms BoundImageAtomicOr32, not ADD, at descriptor 0x210.
+
+B validation:
+build-gather/tests/gather-tests -> All tests passed (581214 assertions in 138 test cases).
+build-gather/round2/frontend-build/ampere-extra-tests -> All tests passed (6840750 assertions in 56 test cases).
+Whole compute CFG constructed and all CFG blocks translated to raw IR, including
+three BoundImageAtomicOr32 operations. Optimized translation correctly stops on
+missing storage-pointer context at 0x1c0. No SPIR-V or rendered result claimed.
+C continues. No push or remote access.
