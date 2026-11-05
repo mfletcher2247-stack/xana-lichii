@@ -23,6 +23,16 @@ u64 MoveImmediate(u64 predicate, u32 target, u32 value) {
     return 0x0100000000000000ULL | predicate | target | (15ULL << 12) | (u64{value} << 20);
 }
 
+u64 HalfConvert(u64 predicate, u32 target, u32 source) {
+    return 0x5ca8000000000000ULL | predicate | target | (1ULL << 8) | (2ULL << 10) |
+           (u64{source} << 20);
+}
+
+u64 HalfCombine(u64 predicate, u32 target, u32 low, u32 high) {
+    return 0x5c18000000000000ULL | predicate | target | (u64{high} << 8) | (u64{low} << 20) |
+           (16ULL << 39);
+}
+
 std::array<Instruction, 4> PerTapProgram(u32 packed = 0xff00ff00) {
     return {{
         {{0x00087802, packed, 0x00000f00, 0x000fe400}},
@@ -108,7 +118,7 @@ TEST_CASE("Ampere per-tap gathers reject unproven offsets and unsupported modes"
             REQUIRE(lowered.error == "native per-tap gather offset range");
         }
     }
-    for (const u32 bit : {60U, 72U, 76U, 78U, 79U, 80U, 81U, 89U, 91U}) {
+    for (const u32 bit : {60U, 72U, 76U, 78U, 80U, 81U, 89U, 91U}) {
         auto invalid = PerTapProgram();
         invalid[2].words[bit / 32] ^= 1U << (bit % 32);
         INFO("bit " << bit);
@@ -138,8 +148,10 @@ TEST_CASE("Ampere per-tap gathers reject unproven offsets and unsupported modes"
     REQUIRE_FALSE(LowerToMaxwell(invalid));
     const Instruction branch{{0x00007947, 0, 0x03800000, 0}};
     const auto program = PerTapProgram();
-    REQUIRE_FALSE(LowerToMaxwell(std::array{branch, program[0], program[1], program[2], Exit}));
-    REQUIRE_FALSE(LowerToMaxwell(std::array{program[0], program[1], program[2], branch, Exit}));
+    // Branches outside the window between the offset definitions and the gather cannot
+    // change which definition reaches it, so they are no longer proof failures.
+    REQUIRE(LowerToMaxwell(std::array{branch, program[0], program[1], program[2], Exit}));
+    REQUIRE(LowerToMaxwell(std::array{program[0], program[1], program[2], branch, Exit}));
 }
 
 TEST_CASE("Ampere gathers without per-tap offsets keep their previous lowering",
@@ -285,4 +297,94 @@ TEST_CASE("Ampere array depth comparisons support nonlegacy descriptor bindings"
     const auto begin = mixed.instructions.begin() + mixed.source_instruction_offsets[1];
     REQUIRE(std::equal(alternate.begin(), alternate.end(), begin));
     REQUIRE(begin + alternate.size() + 1 == mixed.instructions.end());
+}
+
+TEST_CASE("Ampere half per-tap gathers lower to TLD4.PTP and pack both halves",
+          "[video_core][ampere][gather][half_texture]") {
+    struct Case {
+        std::array<u32, 4> words;
+        u32 source_a;
+        u32 source_b;
+        u32 dest;
+        u32 second_dest;
+    };
+    // The two fp16 per-tap gathers from the OoT capture: comp 0x340 and comp 0x230.
+    const std::array<Case, 2> cases{{
+        {{0x0a0c7b63, 0x30003000, 0x001eaf0d, 0x000fc200}, 10, 0, 12, 13},
+        {{0x08007b63, 0x30003022, 0x001eaf02, 0x000fc400}, 8, 34, 0, 2},
+    }};
+    for (const auto& c : cases) {
+        const Instruction gather{{c.words[0], c.words[1], c.words[2], c.words[3]}};
+        const std::array<Instruction, 4> code{{
+            {{0x00007802U | (c.source_b << 16), 0xff00ff00U, 0x00000f00U, 0x000fe400U}},
+            {{0x00007802U | ((c.source_b + 1) << 16), 0x01000001U, 0x00000f00U, 0x000fe400U}},
+            gather,
+            Exit,
+        }};
+        const auto lowered = LowerToMaxwell(code);
+        INFO(lowered.error);
+        REQUIRE(lowered);
+        const u64 pred = 7ULL << 16;
+        const std::array<u64, 12> expected{{
+            MoveImmediate(pred, 248, 0xff00ff00U),
+            MoveImmediate(pred, 249, 0x01000001U),
+            Copy(pred, 250, c.source_a),
+            Copy(pred, 251, c.source_a + 1),
+            0xc800000000000000ULL | pred | 250 | (250ULL << 8) | (248ULL << 20) | (2ULL << 28) |
+                (15ULL << 31) | (0x30ULL << 36) | (7ULL << 51) | (2ULL << 54),
+            HalfConvert(pred, 246, 250),
+            HalfConvert(pred, 247, 251),
+            HalfCombine(pred, c.dest, 246, 247),
+            HalfConvert(pred, 246, 252),
+            HalfConvert(pred, 247, 253),
+            HalfCombine(pred, c.second_dest, 246, 247),
+            0xe30000000007000fULL,
+        }};
+        const auto begin = lowered.instructions.begin() + lowered.source_instruction_offsets[2];
+        REQUIRE(std::equal(expected.begin(), expected.end(), begin));
+        REQUIRE(begin + expected.size() == lowered.instructions.end());
+    }
+}
+
+TEST_CASE("Ampere per-tap gather proofs walk over unrelated code and name real control flow",
+          "[video_core][ampere][gather]") {
+    const Instruction gather{{0x040a7b63, 0x33800408, 0x041e2f08, 0x100fc200}};
+    const Instruction def0{{0x00087802, 0xff00ff00, 0x00000f00, 0x000fe400}};
+    const Instruction def1{{0x00097802, 0x01000001, 0x00000f00, 0x000fe400}};
+    const Instruction mov{{0x00007202, 0x00000000, 0x00000f00, 0x000fe400}};
+    const Instruction branch{{0x00007947, 0x00000000, 0x03800000, 0x000fe400}};
+    // An ordinary move between the offset definitions and the gather is not control flow.
+    REQUIRE(LowerToMaxwell(std::array{def0, def1, mov, gather, Exit}));
+    // A branch after the gather cannot change the offsets either.
+    REQUIRE(LowerToMaxwell(std::array{def0, def1, gather, branch, Exit}));
+    // A branch inside the definition window is real control flow, and the error names it.
+    const auto window = LowerToMaxwell(std::array{def0, branch, def1, gather, Exit});
+    REQUIRE_FALSE(window);
+    REQUIRE(window.error == "native per-tap gather control-flow proof");
+    REQUIRE(window.error_offset == sizeof(Instruction));
+}
+
+TEST_CASE("Ampere depth compare gathers lower to Maxwell TLD4.DC",
+          "[video_core][ampere][gather]") {
+    // OoT gfx 0x1650: 2D, no offsets, bit 78 set, x/y in R24/R25, reference in R28.
+    const Instruction gather{{0x180c7b63, 0x30800e1c, 0x001e4f0e, 0x000f4200}};
+    const auto lowered = LowerToMaxwell(std::array{gather, Exit});
+    INFO(lowered.error);
+    REQUIRE(lowered);
+    REQUIRE(lowered.required_texture_buffer == 2);
+    const u64 pred = 7ULL << 16;
+    const std::array<u64, 9> expected{{
+        Copy(pred, 250, 24),
+        Copy(pred, 251, 25),
+        Copy(pred, 246, 28),
+        0xc800000000000000ULL | pred | 250 | (250ULL << 8) | (246ULL << 20) | (2ULL << 28) |
+            (15ULL << 31) | (0xeULL << 36) | (1ULL << 50) | (7ULL << 51),
+        Copy(pred, 12, 250),
+        Copy(pred, 13, 251),
+        Copy(pred, 14, 252),
+        Copy(pred, 15, 253),
+        0xe30000000007000fULL,
+    }};
+    REQUIRE(std::equal(expected.begin(), expected.end(), lowered.instructions.begin()));
+    REQUIRE(lowered.instructions.size() == expected.size());
 }
