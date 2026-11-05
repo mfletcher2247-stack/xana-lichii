@@ -33,6 +33,7 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
     case 0xa02:
     case 0xc3e:
     case 0x802:
+    case 0x803:   // P2R: the predicate mask is an immediate, only the destination is a register.
     case 0xb08:
     case 0xd08:
     case 0x908:
@@ -64,6 +65,9 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
     case 0x220:
     case 0x221:
     case 0x209:
+    case 0x809:   // FMNMX with an immediate or a uniform source in words[1].
+    case 0xa09:
+    case 0xc09:
         operand(16);
         operand(24);
         operand(32);
@@ -173,6 +177,9 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
     case 0x210:
     case 0x211:
     case 0x212:
+    case 0x219:   // SHF: low word, shift, high word.
+    case 0xa19:
+    case 0xc19:
         operand(16);
         operand(24);
         operand(32);
@@ -221,6 +228,12 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
     case 0x987: {
         const u32 width = input.Bits(73, 3), count = width == 6 ? 4 : width == 5 ? 2 : 1;
         operand(opcode == 0x983 ? 16 : 32, count);
+        operand(24);
+        break;
+    }
+    case 0xb82: {   // LDC with an indexed byte offset: destination width from bits 73-75, index in Rb.
+        const u32 width = input.Bits(73, 3), count = width == 5 ? 2U : 1U;
+        operand(16, count);
         operand(24);
         break;
     }

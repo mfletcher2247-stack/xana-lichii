@@ -167,10 +167,13 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
     control_entries[0] = true;
     const auto write_count = [](const Instruction& instruction) -> std::optional<u32> {
         switch (instruction.Bits(0, 12)) {
-        case 0x202: case 0x802: case 0x424: case 0x724: case 0x824: case 0xe24: case 0x227:
-        case 0x810: case 0x819: case 0x845: case 0x906: case 0x820:
+        case 0x202: case 0x802: case 0xa02: case 0xc02: case 0x424: case 0x724: case 0x824: case 0xe24: case 0x227:
+        case 0x224: case 0x624: case 0x2a4: case 0x4a4: case 0x8a4:
+        case 0x810: case 0xa10: case 0xc10: case 0x819: case 0x845: case 0x906: case 0x820:
         case 0x812: case 0x589:
         case 0x212: case 0x207: case 0x807: case 0x208: case 0x808:
+        case 0xa07: case 0xc07: case 0xa08: case 0xc08:
+        case 0x211: case 0x811: case 0xa11: case 0xc11:
         case 0x220: case 0xa20: case 0x221: case 0x421: case 0x621:
         case 0x223: case 0x423: case 0x623: case 0x823: case 0xa23:
         case 0x243: case 0x245: case 0x306:
@@ -231,9 +234,36 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             bounded_control = false;
         }
     }
+    // A call whose target region ends in an unconditional EXIT without returning is the compiler's
+    // abort stub: `@Px CALL stub; BRA back; stub: BRA next; EXIT`. It never returns, so it needs no
+    // link register, and the code after the call is reachable only by falling through. A branch
+    // through to the EXIT (0x941/0x942/0x948) is part of the stub.
+    const auto nonreturning_stub = [&](u32 target) {
+        if (target >= control_limit) return false;
+        for (u32 pc = target; pc < control_limit; ++pc) {
+            if (pc != target && control_entries[pc]) return false;
+            const auto& instruction = code[pc];
+            const u32 op = instruction.Bits(0, 12);
+            if (op == 0x94d)
+                return instruction.Bits(12, 4) == 7 && instruction.Bits(84, 2) == 0 &&
+                       instruction.Bits(87, 4) == 7;
+            if ((op == 0x941 || op == 0x942 || op == 0x948) && direct_targets[pc] == pc + 1) continue;
+            return false;
+        }
+        return false;
+    };
     for (u32 index = 1; bounded_control && index < control_limit; ++index) {
         if (code[index].Bits(0, 12) != 0x944) continue;
-        if (code[index].words[0] != 0x7944) { bounded_control = false; break; }
+        // The call may carry any predicate: when it is false the call does not happen and the next
+        // instruction runs, which is already recorded as a control edge below. Only the rest of the
+        // plain CALL shape (R0 in the destination and source fields) has to hold.
+        if ((code[index].words[0] & ~0x0000f000U) != 0x00000944U) { bounded_control = false; break; }
+        const u32 stub = direct_targets[index];
+        if (stub != ~0U && nonreturning_stub(stub)) {
+            for (const auto& [source, destination] : control_edges)
+                if (destination == stub && code[source].Bits(0, 12) != 0x944) bounded_control = false;
+            continue;
+        }
         std::array<bool, 256> overwritten{};
         u32 setup = index;
         for (u32 prior = index; prior-- > 0;) {
@@ -259,6 +289,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
     for (u32 index = 0; bounded_control && index < control_limit; ++index) {
         if (code[index].Bits(0, 12) != 0x944) continue;
         const u32 link = bounded_links[index], target = direct_targets[index];
+        if (link == ~0U) continue;   // an accepted abort-stub call: no link register and no return to check
         if (target == 0) { bounded_control = false; break; }
         const auto& previous = code[target - 1];
         const u32 previous_opcode = previous.Bits(0, 12);
@@ -271,10 +302,11 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             if (destination == target && code[source].Bits(0, 12) != 0x944) bounded_control = false;
         std::array<bool, 256> aliases{};
         aliases[link] = true;
-        bool returned = false;
+        bool returned = false, terminal_exit = nonreturning_stub(target);
         for (u32 pc = target; pc < control_limit; ++pc) {
             const auto& instruction = code[pc];
             if (pc != target && control_entries[pc]) break;
+            if (pc == target && terminal_exit) break;
             if (instruction.Bits(0, 12) == 0x950) {
                 const u64 raw = instruction.words[1] | (u64{instruction.words[2] & 0x3ffff} << 32);
                 const s64 relative = static_cast<s64>(raw << 14) >> 14;
@@ -302,7 +334,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             for (u32 component = 0; component < *count; ++component)
                 aliases[destination + component] = component == 0 && copy;
         }
-        if (!returned) bounded_control = false;
+        if (!returned && !terminal_exit) bounded_control = false;
     }
     for (u32 index = 0; bounded_control && index < control_limit; ++index)
         if (code[index].Bits(0, 12) == 0x950 && !checked_returns[index]) bounded_control = false;
@@ -2617,6 +2649,11 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                         return fail(pc, "native per-tap gather control-flow proof");
                     }
                     if (op == 0x941 || op == 0x942 || op == 0x948) continue;
+                    // A proved call or return does not disturb the linear model: bounded_control above
+                    // has already established every call's link register and its callee's return (or
+                    // that the callee is an abort stub), and a call inside the offset definition region
+                    // is rejected separately below.
+                    if ((op == 0x944 || op == 0x950) && bounded_control) continue;
                     if (((op & 0x1ff) >= 0x140 && (op & 0x1ff) <= 0x15f) &&
                         op != 0x348 && op != 0x95b)
                         return fail(pc, "native per-tap gather control-flow proof");
@@ -3323,7 +3360,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             break;
         }
         case 0x207: case 0x807: case 0xa07: case 0xc07:
-        case 0x208: case 0x808: case 0xa08: { // Bitwise SEL / FSEL
+        case 0x208: case 0x808: case 0xa08: case 0xc08: { // Bitwise SEL / FSEL
             // FSEL applies the floating operand modifiers (negate/absolute) before selecting.
             const bool floating = (opcode & 0x1ff) == 0x008;
             const u32 a = operand(0, floating), b = operand(1, floating);
