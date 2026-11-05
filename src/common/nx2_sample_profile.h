@@ -11,9 +11,12 @@
 /// samples the guest cores). Sampling starts after EDEN_NX2_SAMPLE_DELAY seconds (default 0)
 /// and stops after EDEN_NX2_SAMPLE_SECONDS (default 20). It turns EDEN_NX2_GPU_PROFILE's zone
 /// timers off so they don't show up in the samples.
+/// EDEN_NX2_GPU_PROFILE_AFTER_SAMPLE=1 allows zone timers after the sample file closes,
+/// when EDEN_NX2_GPU_PROFILE is also set. Keep playing for at least 30 s after sampling.
 namespace Common::Nx2SampleProfile {
 
 [[nodiscard]] bool Requested();
+[[nodiscard]] bool Completed();
 
 /// From SetCurrentThreadName: samples the calling thread if its name is selected, and starts
 /// the sampler with the first one.

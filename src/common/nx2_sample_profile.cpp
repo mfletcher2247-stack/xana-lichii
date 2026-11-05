@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <atomic>
 #include <cstdlib>
 #include <string>
 #include <string_view>
@@ -10,7 +11,6 @@
 
 #ifdef _WIN32
 #include <array>
-#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -27,6 +27,8 @@
 namespace Common::Nx2SampleProfile {
 
 namespace {
+
+std::atomic<bool> completed{};
 
 struct Config {
     unsigned hz{};
@@ -236,8 +238,13 @@ void SamplerMain() {
     if (timer != nullptr) {
         CloseHandle(timer);
     }
+    if (!file) {
+        LOG_ERROR(Common, "Sample profile: failed writing {}", path.string());
+        return;
+    }
     LOG_INFO(Common, "Sample profile: {} samples of {} threads at {} Hz written to {}", samples,
              threads_written, config.hz, path.string());
+    completed.store(true, std::memory_order_release);
 }
 
 #endif
@@ -246,6 +253,10 @@ void SamplerMain() {
 
 bool Requested() {
     return GetConfig().hz != 0;
+}
+
+bool Completed() {
+    return completed.load(std::memory_order_acquire);
 }
 
 void OnThreadNamed(const char* name) {

@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 
 #include "common/common_types.h"
@@ -14,6 +15,7 @@
 #include "common/logging.h"
 #include "common/cpu_features.h"
 #include "common/thread_cpu_clock.h"
+#include "common/nx2_sample_profile.h"
 
 // EDEN_NX2_GPU_PROFILE: time where the GPU thread spends its time. Each zone counts its own
 // (exclusive) time, nested zones excluded; every 10 s the thread logs each zone's share.
@@ -71,13 +73,18 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
 };
 
 // Read once at startup: Enabled() runs several times per method write (no guard to check).
-// Off while EDEN_NX2_SAMPLE_PROFILE samples (common/nx2_sample_profile.h): the zone timers would
-// show up in the samples.
+// The opt-in second phase only enables timers once, after sampling. No live scope spans a
+// disable or reset, and the first Report starts a fresh window on each GPU thread.
+inline const bool g_after_sample = [] {
+    const char* value = std::getenv("EDEN_NX2_GPU_PROFILE_AFTER_SAMPLE");
+    return value != nullptr && std::string_view{value} == "1" &&
+           Common::Nx2SampleProfile::Requested();
+}();
 inline const bool g_enabled = std::getenv("EDEN_NX2_GPU_PROFILE") != nullptr &&
-                              std::getenv("EDEN_NX2_SAMPLE_PROFILE") == nullptr;
+                              (!Common::Nx2SampleProfile::Requested() || g_after_sample);
 
 inline bool Enabled() {
-    return g_enabled;
+    return g_enabled && (!g_after_sample || Common::Nx2SampleProfile::Completed());
 }
 
 // Nanoseconds; from the host's own counter where the wall clock reads it directly (the zones
@@ -159,7 +166,7 @@ inline void Add(Counter counter, u64 amount) {
 
 /// The front waited for the back since `start` (Now) for `site`.
 inline void AddDrain(DrainSite site, u64 start) {
-    if (Enabled()) {
+    if (start != 0 && Enabled()) {
         const auto index = static_cast<size_t>(site);
         t_data.drain_ns[index] += Now() - start;
         ++t_data.drain_count[index];
