@@ -108,6 +108,58 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         if (!*geometry_exit)
             return fail(geometry_exit->error_offset / sizeof(Instruction), geometry_exit->error);
     }
+    // Captures may include unrelated code after the closing self-branch.
+    // Bound call-link analysis only when a closed control walk proves that
+    // boundary unreachable; otherwise keep the conservative whole-capture checks.
+    const u32 control_limit = [&] {
+        if (geometry_stage) return static_cast<u32>(code.size());
+        std::vector<bool> visited(code.size());
+        std::vector<u32> pending{0};
+        u32 limit = 0;
+        while (!pending.empty()) {
+            const u32 pc = pending.back();
+            pending.pop_back();
+            if (pc >= code.size()) return static_cast<u32>(code.size());
+            if (visited[pc]) continue;
+            visited[pc] = true;
+            limit = (std::max)(limit, pc + 1);
+            const auto& instruction = code[pc];
+            const u32 op = instruction.Bits(0, 12);
+            const u32 guard = instruction.Bits(12, 4);
+            bool fallthrough = true;
+            if (guard != 15) {
+                if (op == 0x944 || op == 0x945 || op == 0x947) {
+                    const u32 mode = instruction.words[2] & ~0x3ffffU;
+                    if (mode != (op == 0x944 ? 0x03c00000U : 0x03800000U) &&
+                        !(op == 0x947 && mode == 0x0b800000U))
+                        return static_cast<u32>(code.size());
+                    const u64 raw = (instruction.words[1] & (op == 0x947 ? ~3U : ~0U)) |
+                                    (u64{instruction.words[2] & 0x3ffffU} << 32);
+                    const s64 relative = static_cast<s64>(raw << 14) >> 14;
+                    const s64 target = s64{pc} * 16 + 16 + relative;
+                    if (target < 0 || target % 16 || target / 16 >= code.size())
+                        return static_cast<u32>(code.size());
+                    pending.push_back(static_cast<u32>(target / 16));
+                    if (op == 0x947 && guard == 7 && instruction.Bits(87, 4) == 7 &&
+                        instruction.Bits(32, 2) != 2)
+                        fallthrough = false;
+                } else if (op == 0x94d || op == 0x950) {
+                    if (guard == 7 && instruction.Bits(87, 4) == 7 && !instruction.Bits(84, 2))
+                        fallthrough = false;
+                } else if ((op & 0x1ff) >= 0x140 && (op & 0x1ff) <= 0x15f &&
+                           op != 0x941 && op != 0x942 && op != 0x948 &&
+                           op != 0x348 && op != 0x95b) {
+                    return static_cast<u32>(code.size());
+                }
+            }
+            if (fallthrough) pending.push_back(pc + 1);
+        }
+        if (limit < code.size() && code[limit].words[0] == 0x00007947 &&
+            code[limit].words[1] == 0xfffffff0 && code[limit].words[2] == 0x0383ffff &&
+            !(code[limit].words[3] & 0xc00001ffU))
+            return limit;
+        return static_cast<u32>(code.size());
+    }();
     std::vector<bool> control_entries(code.size()), dead_instructions(code.size()), checked_returns(code.size());
     std::vector<u32> bounded_links(code.size(), ~0U), direct_targets(code.size(), ~0U);
     std::vector<std::pair<u32, u32>> control_edges;
@@ -150,7 +202,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         }
         return true;
     };
-    for (u32 index = 0; index < code.size(); ++index) {
+    for (u32 index = 0; index < control_limit; ++index) {
         const auto& instruction = code[index];
         const u32 opcode = instruction.Bits(0, 12);
         if (opcode == 0x944 || opcode == 0x945 || opcode == 0x947) {
@@ -162,14 +214,14 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                             (u64{instruction.words[2] & 0x3ffff} << 32);
             const s64 relative = static_cast<s64>(raw << 14) >> 14;
             const s64 target = s64{index} * 16 + 16 + relative;
-            if (target < 0 || target % 16 || static_cast<u64>(target / 16) >= code.size()) {
+            if (target < 0 || target % 16 || static_cast<u64>(target / 16) >= control_limit) {
                 bounded_control = false;
             } else {
                 direct_targets[index] = static_cast<u32>(target / 16);
                 control_entries[direct_targets[index]] = true;
                 control_edges.emplace_back(index, direct_targets[index]);
             }
-            if (opcode == 0x944 && index + 1 < code.size()) {
+            if (opcode == 0x944 && index + 1 < control_limit) {
                 control_entries[index + 1] = true;
                 control_edges.emplace_back(index, index + 1);
             }
@@ -179,7 +231,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             bounded_control = false;
         }
     }
-    for (u32 index = 1; bounded_control && index < code.size(); ++index) {
+    for (u32 index = 1; bounded_control && index < control_limit; ++index) {
         if (code[index].Bits(0, 12) != 0x944) continue;
         if (code[index].words[0] != 0x7944) { bounded_control = false; break; }
         std::array<bool, 256> overwritten{};
@@ -204,7 +256,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         for (u32 entry = setup + 1; entry <= index; ++entry)
             if (control_entries[entry]) bounded_control = false;
     }
-    for (u32 index = 0; bounded_control && index < code.size(); ++index) {
+    for (u32 index = 0; bounded_control && index < control_limit; ++index) {
         if (code[index].Bits(0, 12) != 0x944) continue;
         const u32 link = bounded_links[index], target = direct_targets[index];
         if (target == 0) { bounded_control = false; break; }
@@ -220,7 +272,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         std::array<bool, 256> aliases{};
         aliases[link] = true;
         bool returned = false;
-        for (u32 pc = target; pc < code.size(); ++pc) {
+        for (u32 pc = target; pc < control_limit; ++pc) {
             const auto& instruction = code[pc];
             if (pc != target && control_entries[pc]) break;
             if (instruction.Bits(0, 12) == 0x950) {
@@ -252,9 +304,9 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         }
         if (!returned) bounded_control = false;
     }
-    for (u32 index = 0; bounded_control && index < code.size(); ++index)
+    for (u32 index = 0; bounded_control && index < control_limit; ++index)
         if (code[index].Bits(0, 12) == 0x950 && !checked_returns[index]) bounded_control = false;
-    for (u32 index = 0; bounded_control && index < code.size(); ++index) {
+    for (u32 index = 0; bounded_control && index < control_limit; ++index) {
         const auto& instruction = code[index];
         const u32 target = direct_targets[index];
         if (instruction.Bits(0, 12) != 0x947 || instruction.Bits(12, 4) != 7 ||
