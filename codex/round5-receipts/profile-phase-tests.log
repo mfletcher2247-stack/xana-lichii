@@ -1,0 +1,9 @@
+{}: zone gate 0 -> 0; zero-start drain ignored
+{'EDEN_NX2_GPU_PROFILE': '1'}: zone gate 1 -> 1; zero-start drain ignored
+{'EDEN_NX2_GPU_PROFILE': '1', 'EDEN_NX2_SAMPLE_PROFILE': '250'}: zone gate 0 -> 0; zero-start drain ignored
+{'EDEN_NX2_GPU_PROFILE': '1', 'EDEN_NX2_SAMPLE_PROFILE': '250', 'EDEN_NX2_GPU_PROFILE_AFTER_SAMPLE': '1'}: zone gate 0 -> 1; zero-start drain ignored
+{'EDEN_NX2_GPU_PROFILE': '1', 'EDEN_NX2_SAMPLE_PROFILE': '0'}: zone gate 1 -> 1; zero-start drain ignored
+{'EDEN_NX2_GPU_PROFILE': '1', 'EDEN_NX2_SAMPLE_PROFILE': '250', 'EDEN_NX2_GPU_PROFILE_AFTER_SAMPLE': '0'}: zone gate 0 -> 0; zero-start drain ignored
+{'EDEN_NX2_SAMPLE_PROFILE': '250', 'EDEN_NX2_GPU_PROFILE_AFTER_SAMPLE': '1'}: zone gate 0 -> 0; zero-start drain ignored
+{'EDEN_NX2_GPU_PROFILE': '1', 'EDEN_NX2_GPU_PROFILE_AFTER_SAMPLE': '1'}: zone gate 1 -> 1; zero-start drain ignored
+8/8 phase-gate cases passed

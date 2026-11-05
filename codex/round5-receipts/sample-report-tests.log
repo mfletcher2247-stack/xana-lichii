@@ -1,0 +1,12 @@
+test_cut_short_file_keeps_whole_records (test_sample_report.SampleReportTest.test_cut_short_file_keeps_whole_records) ... ok
+test_folded_and_svg (test_sample_report.SampleReportTest.test_folded_and_svg) ... ok
+test_parse (test_sample_report.SampleReportTest.test_parse) ... ok
+test_rejects_other_files (test_sample_report.SampleReportTest.test_rejects_other_files) ... ok
+test_summary (test_sample_report.SampleReportTest.test_summary) ... ok
+test_symbolizer_cache (test_sample_report.SampleReportTest.test_symbolizer_cache) ... ok
+test_symbolizes_return_addresses_at_the_call (test_sample_report.SampleReportTest.test_symbolizes_return_addresses_at_the_call) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.006s
+
+OK

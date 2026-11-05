@@ -1,0 +1,11 @@
+src/common/nx2_sample_profile.cpp exit 0
+src/video_core/gpu_thread.cpp exit 0
+src/video_core/gpu_split.cpp exit 0
+src/video_core/renderer_vulkan/vk_texture_cache.cpp exit 0
+src/video_core/renderer_vulkan/vk_rasterizer.cpp exit 0
+src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp exit 0
+src/tests/video_core/fast_draw.cpp exit 0
+src/tests/video_core/memory_tracker.cpp exit 0
+src/video_core/renderer_vulkan/vk_scheduler.cpp exit 0
+src/tests/video_core/parallel_record.cpp exit 0
+src/tests/video_core/parallel_record_vulkan.cpp exit 0

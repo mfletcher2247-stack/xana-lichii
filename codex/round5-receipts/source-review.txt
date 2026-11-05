@@ -1,0 +1,16 @@
+$ git diff --exit-code xana/oot-gather-v3 -- src/shader_recompiler src/video_core/shader_environment.cpp
+
+
+exit=0
+$ git log -1 --format=%h %s
+17f6ca1a1c Merge remote-tracking branch 'origin/nx2' into xana/oot-perf2
+
+exit=0
+$ git diff --check
+
+
+exit=0
+Compare every frozen pristine header to git show c9ebb5c3:<path>:
+different=[]
+Joint accepts with different frame hashes: 0
+Recompiler unchanged from V3; three reviewed conflict sites compile.

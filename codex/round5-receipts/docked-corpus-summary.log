@@ -1,0 +1,53 @@
+{
+  "program_files": 935,
+  "header_files": 830,
+  "compute_files": 105,
+  "distinct_contents": 874,
+  "new_content_files": 235,
+  "new_distinct_contents": 227,
+  "trees": {
+    "pristine": {
+      "all": {
+        "ok": 932,
+        "reject": 3
+      },
+      "new": {
+        "ok": 235
+      },
+      "rejected": {
+        "6f9367bd41dc0b58-cs-1148bd5300.bin": {
+          "lowered_words": 0,
+          "offset": 832,
+          "reason": "native texture gather mode",
+          "source_bytes": 20496,
+          "status": "reject"
+        },
+        "9387db798781f081-cs-1148bbae00.bin": {
+          "lowered_words": 0,
+          "offset": 8848,
+          "reason": "native per-tap gather control-flow proof",
+          "source_bytes": 20688,
+          "status": "reject"
+        },
+        "d5e90d353c783c23-gfx-11494d8200.bin": {
+          "lowered_words": 0,
+          "offset": 5712,
+          "reason": "native texture gather mode",
+          "source_bytes": 8560,
+          "status": "reject"
+        }
+      },
+      "driver_sha256": "bb006667d3d81c211c16739ce9ef74ed0547090dbdda873127b7907eb2c608b3"
+    },
+    "v3": {
+      "all": {
+        "ok": 935
+      },
+      "new": {
+        "ok": 235
+      },
+      "rejected": {},
+      "driver_sha256": "f94e1f9e79d855359c4d4b533d2866635be80fa3d02f2cd5a7d492a15a138049"
+    }
+  }
+}
