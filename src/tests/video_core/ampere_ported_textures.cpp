@@ -363,3 +363,68 @@ TEST_CASE("Ampere half per-tap gathers still require proven offsets and supporte
     code[0].words[0] = 0x00081802;
     REQUIRE(LowerToMaxwell(code).error == "native per-tap gather nonconstant offsets");
 }
+
+TEST_CASE("Ampere per-tap gathers cross known linear instructions but reject offset writes",
+          "[video_core][ampere][gather]") {
+    const auto code = PerTapProgram();
+    const std::array linear{
+        Instruction{{0x00007202, 0, 0x00000f00, 0}}, // MOV R0, R0
+        Instruction{{0x01007225, 2, 0x078e00ff, 0}}, // IMAD.WIDE R0:R1
+        Instruction{{0x00007981, 0, 0x0c1e1d00, 0}}, // LDG R0
+        Instruction{{0x00007992, 0, 0, 0}}, // MEMBAR
+        Instruction{{0x000079ab, 0, 0, 0}}, // ERRBAR
+        Instruction{{0x00007918, 0, 0, 0}}, // NOP
+    };
+    for (const auto& instruction : linear) {
+        const auto lowered = LowerToMaxwell(
+            std::array{code[0], code[1], instruction, code[2], Exit});
+        INFO(lowered.error);
+        REQUIRE(lowered);
+    }
+    for (auto instruction : {linear[0], linear[1], linear[2]}) {
+        // Any write to an offset is unsafe.
+        instruction.words[0] = (instruction.words[0] & ~0xff0000U) | (8U << 16);
+        const auto lowered = LowerToMaxwell(
+            std::array{code[0], code[1], instruction, code[2], Exit});
+        INFO(lowered.error);
+        REQUIRE_FALSE(lowered);
+        REQUIRE(lowered.error == "native per-tap gather nonconstant offsets");
+        REQUIRE(lowered.error_offset == 2 * sizeof(Instruction));
+    }
+    // R8:R9 overlaps the first offset at R9 even though the destination base differs.
+    auto shifted = code;
+    shifted[0].words[0] = 0x00097802;
+    shifted[1].words[0] = 0x000a7802;
+    shifted[2].words[1] = (shifted[2].words[1] & ~255U) | 9U;
+    auto wide = linear[1];
+    wide.words[0] |= 8U << 16;
+    const auto overlap = LowerToMaxwell(
+        std::array{shifted[0], shifted[1], wide, shifted[2], Exit});
+    REQUIRE(overlap.error == "native per-tap gather nonconstant offsets");
+    REQUIRE(overlap.error_offset == 2 * sizeof(Instruction));
+}
+
+TEST_CASE("Ampere per-tap gather diagnostics name real control flow and reject bypasses",
+          "[video_core][ampere][gather]") {
+    const auto code = PerTapProgram();
+    const Instruction branch{{0x00007947, 0, 0x03800000, 0}};
+    for (const u32 pc : {0U, 1U, 3U}) {
+        std::vector<Instruction> program{code.begin(), code.end()};
+        program.insert(program.begin() + pc, branch);
+        const auto lowered = LowerToMaxwell(program);
+        REQUIRE_FALSE(lowered);
+        REQUIRE(lowered.error == "native per-tap gather control-flow proof");
+        REQUIRE(lowered.error_offset == pc * sizeof(Instruction));
+    }
+    // An earlier branch that enters at the gather bypasses BOTH constant definitions.
+    auto bypass = branch;
+    bypass.words[1] = 2 * sizeof(Instruction);
+    const auto rejected = LowerToMaxwell(std::array{bypass, code[0], code[1], code[2], Exit});
+    REQUIRE(rejected.error == "native per-tap gather control-flow proof");
+    REQUIRE(rejected.error_offset == 0);
+    // An unfamiliar opcode remains a proof failure, even after both constants are set.
+    const Instruction unknown{{0x00007fff, 0, 0, 0}};
+    const auto unfamiliar = LowerToMaxwell(std::array{code[0], code[1], code[2], unknown, Exit});
+    REQUIRE(unfamiliar.error == "native per-tap gather control-flow proof");
+    REQUIRE(unfamiliar.error_offset == 3 * sizeof(Instruction));
+}
