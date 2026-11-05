@@ -101,7 +101,7 @@ TEST_CASE("Ampere per-tap gathers prove constants across unrelated arithmetic an
     REQUIRE(LowerToMaxwell(clobber).error == "native per-tap gather offset clobber");
     auto branch = code;
     branch[2].words = {0x00007947, 0, 0x03800000, 0};
-    REQUIRE(LowerToMaxwell(branch).error == "native per-tap gather control-flow proof");
+    REQUIRE(LowerToMaxwell(branch));
 }
 
 TEST_CASE("Ampere per-tap gathers reject unproven offsets and unsupported modes",
@@ -148,8 +148,8 @@ TEST_CASE("Ampere per-tap gathers reject unproven offsets and unsupported modes"
     REQUIRE_FALSE(LowerToMaxwell(invalid));
     const Instruction branch{{0x00007947, 0, 0x03800000, 0}};
     const auto program = PerTapProgram();
-    REQUIRE_FALSE(LowerToMaxwell(std::array{branch, program[0], program[1], program[2], Exit}));
-    REQUIRE_FALSE(LowerToMaxwell(std::array{program[0], program[1], program[2], branch, Exit}));
+    REQUIRE(LowerToMaxwell(std::array{branch, program[0], program[1], program[2], Exit}));
+    REQUIRE(LowerToMaxwell(std::array{program[0], program[1], program[2], branch, Exit}));
 }
 
 TEST_CASE("Ampere gathers without per-tap offsets keep their previous lowering",
@@ -407,29 +407,67 @@ TEST_CASE("Ampere per-tap gathers cross known linear instructions but reject off
     REQUIRE(overlap.error_offset == 2 * sizeof(Instruction));
 }
 
-TEST_CASE("Ampere per-tap gather diagnostics name real control flow and reject bypasses",
+TEST_CASE("Ampere per-tap gathers allow branches that preserve both definitions",
           "[video_core][ampere][gather]") {
     const auto code = PerTapProgram();
     const Instruction branch{{0x00007947, 0, 0x03800000, 0}};
     for (const u32 pc : {0U, 1U, 3U}) {
         std::vector<Instruction> program{code.begin(), code.end()};
         program.insert(program.begin() + pc, branch);
-        const auto lowered = LowerToMaxwell(program);
-        REQUIRE_FALSE(lowered);
-        REQUIRE(lowered.error == "native per-tap gather control-flow proof");
-        REQUIRE(lowered.error_offset == pc * sizeof(Instruction));
+        INFO(pc);
+        REQUIRE(LowerToMaxwell(program));
     }
-    // An earlier branch that enters at the gather bypasses BOTH constant definitions.
     auto bypass = branch;
     bypass.words[1] = 2 * sizeof(Instruction);
     const auto rejected = LowerToMaxwell(std::array{bypass, code[0], code[1], code[2], Exit});
-    REQUIRE(rejected.error == "native per-tap gather control-flow proof");
+    REQUIRE(rejected.error == "native per-tap gather entry bypasses offsets");
     REQUIRE(rejected.error_offset == 0);
-    // An unfamiliar opcode remains a proof failure, even after both constants are set.
+    // An edge from after the gather must not bypass either definition on a later iteration.
+    bypass.words[1] = static_cast<u32>(-2 * s32{sizeof(Instruction)});
+    bypass.words[2] |= 0x3ffff;
+    const auto backward = LowerToMaxwell(std::array{code[0], code[1], code[2], bypass, Exit});
+    REQUIRE(backward.error == "native per-tap gather entry bypasses offsets");
+    REQUIRE(backward.error_offset == 3 * sizeof(Instruction));
+    // Entering at the first definition is safe; entering at only the second is not.
+    bypass = branch;
+    bypass.words[1] = sizeof(Instruction);
+    REQUIRE_FALSE(LowerToMaxwell(std::array{bypass, code[0], code[1], code[2], Exit}));
     const Instruction unknown{{0x00007fff, 0, 0, 0}};
     const auto unfamiliar = LowerToMaxwell(std::array{code[0], code[1], code[2], unknown, Exit});
-    REQUIRE(unfamiliar.error == "native per-tap gather control-flow proof");
+    REQUIRE_FALSE(unfamiliar);
     REQUIRE(unfamiliar.error_offset == 3 * sizeof(Instruction));
+    for (const u32 op : {0x944U, 0x949U, 0x958U, 0x950U}) {
+        auto indirect = branch;
+        indirect.words[0] = 0x7000 | op;
+        REQUIRE_FALSE(LowerToMaxwell(std::array{code[0], code[1], code[2], indirect, Exit}));
+    }
+}
+
+TEST_CASE("Ampere captured 0x2290 proves matching predicated IMAD offsets",
+          "[video_core][ampere][gather]") {
+    const std::array<Instruction, 7> code{{
+        {{0x00047ab9, 0x00004c00, 0x00000a00, 0x000fe400}}, // Real ULDC prologue.
+        {{0xff109424, 0xfffeffff, 0x078e00ff, 0x000fe400}},
+        {{0xff119424, 0xfffcfffd, 0x078e00ff, 0x000fe400}},
+        {{0xff127424, 0x00fe00ff, 0x078e00ff, 0x000fe400}},
+        {{0xff137424, 0x00fc00fd, 0x078e00ff, 0x000fe200}},
+        {{0x06189b63, 0x30007c10, 0x001e2f0e, 0x000f4600}},
+        Exit,
+    }};
+    const auto lowered = LowerToMaxwell(code);
+    INFO(lowered.error);
+    REQUIRE(lowered);
+    auto mismatch = code;
+    mismatch[1].words[0] ^= 1U << 12;
+    REQUIRE_FALSE(LowerToMaxwell(mismatch));
+    mismatch = code;
+    mismatch[5].words[0] = (mismatch[5].words[0] & ~0xf000U) | 0x7000U;
+    REQUIRE_FALSE(LowerToMaxwell(mismatch));
+    const Instruction set_predicate{{0x0000720c, 0x000000ff, 0x03f25270, 0}};
+    std::vector<Instruction> changed{code.begin(), code.end()};
+    changed.insert(changed.begin() + 5, set_predicate);
+    REQUIRE_FALSE(LowerToMaxwell(changed));
+    REQUIRE(LowerToMaxwell(changed).error == "native per-tap gather predicate proof");
 }
 
 TEST_CASE("Ampere per-tap offset proofs use packed half gather write widths",
