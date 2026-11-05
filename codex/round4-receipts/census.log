@@ -1,0 +1,8 @@
+Filename hashes verified: 686
+Compute captures disassembled: 100
+H0_NH1 occurrences: 0
+Lowering: {'ok': 686}
+3D volume writer: 0c546119f1c74fbd-cs-11498cf500.bin {'SUST.P.3D.IGN': 2}
+3D volume writer: d9b1657f3a0b4bc2-cs-11498b5700.bin {'MUFU.LG2': 12, 'MUFU.RCP': 25, 'MUFU.EX2': 16, 'SUST.P.3D.IGN': 10, 'MUFU.SQRT': 6}
+3D volume writer: e883414e8c9be33b-cs-11498f4a00.bin {'SUST.P.3D.IGN': 6, 'MUFU.RCP': 48, 'MUFU.LG2': 16, 'MUFU.EX2': 58, 'MUFU.RSQ': 8, 'MUFU.SQRT': 13}
+3D volume writer: ec68e40eb783ff32-cs-1149901600.bin {'MUFU.RCP': 3, 'MUFU.LG2': 4, 'MUFU.EX2': 7, 'SUST.P.3D.IGN': 3}

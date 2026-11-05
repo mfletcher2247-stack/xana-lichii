@@ -1,0 +1,11 @@
+PASS captured volume FMUL.SAT: negative, normal and >1 inputs
+PASS captured volume MUFU.EX2: exp2(-x), not exp2(x)
+PASS captured volume MUFU.LG2: log2(abs(-0.25)) = -2
+PASS synthetic H0_NH1: (-10,12), matches real SM86 execution
+PASS captured RED.E.ADD.F32: 1.5 + 0.25 = 1.75 at >4 GiB address
+PASS synthetic F2F.F16.F32: even ties, signed zero, largest finite, subnormal
+PASS captured luminance HMUL2/HFMA2: independent mixed-sign halves
+PASS captured HADD2.H0_H0: (-4,2) + (0.5,0.5) = (-3.5,2.5)
+PASS captured F2FP.PACK_AB: high=-0.25, low=nearest-even tie
+PASS synthetic FMNMX: numeric/default-NaN/propagating-NaN min and max
+PASS float texture format maps: RGBA16F, RG16F and R11G11B10F stay float
