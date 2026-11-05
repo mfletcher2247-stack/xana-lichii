@@ -54,6 +54,22 @@ TEST_CASE("Ampere IMNMX retains its signed twenty-bit immediate encoding", "[amp
     REQUIRE_FALSE(LowerToMaxwell(std::array{unsupported, Exit}));
 }
 
+TEST_CASE("Ocarina captured surface reductions preserve OR and predication", "[ampere][oot]") {
+    for (const auto captured : {Instruction{{0x0400159f, 0x60008400, 0x0310e000, 0x0001e200}},
+                                 Instruction{{0x0c00259f, 0x60008401, 0x0310e000, 0x0001ec00}},
+                                 Instruction{{0x0400759f, 0x60008400, 0x0310e000, 0x000fe200}}}) {
+        const auto lowered = LowerToMaxwell(std::array{captured, Exit});
+        REQUIRE(lowered);
+        CHECK(lowered.required_texture_buffer == 0);
+        CHECK(lowered.instructions[0] == (0xeb48084606000000ULL |
+              (u64{captured.Bits(12, 4)} << 16) | (u64{captured.Bits(24, 8)} << 8) |
+              captured.Bits(32, 8)));
+        auto unsupported = captured;
+        unsupported.words[2] |= 1U << 26; // Not an encoded SURED operation bit.
+        CHECK_FALSE(LowerToMaxwell(std::array{unsupported, Exit}));
+    }
+}
+
 TEST_CASE("Yoshi captured SURED uses a buffer coordinate and descriptor", "[ampere][yoshi]") {
     for (const u32 dimension : {1U, 3U}) {
         for (const u32 guard : {0U, 7U, 9U}) {

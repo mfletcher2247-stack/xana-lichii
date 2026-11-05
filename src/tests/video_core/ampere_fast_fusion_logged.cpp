@@ -630,6 +630,26 @@ TEST_CASE("Ocarina 64-bit right shifts include both words and clamp at 64",
     }
 }
 
+TEST_CASE("Ocarina captured SURED OR reaches image atomic OR IR", "[video_core][ampere][oot]") {
+    const Instruction captured{{0x0400759f, 0x60008400, 0x0310e000, 0x000fe200}};
+    const auto lowered = LowerToMaxwell(std::array{captured, Exit});
+    REQUIRE(lowered);
+    HalfEnvironment env;
+    Shader::ObjectPool<IR::Inst> pool;
+    IR::Block block{pool};
+    Shader::Maxwell::TranslatorVisitor visitor{env, block};
+    visitor.SURED(lowered.instructions[0]);
+    u32 atomics = 0;
+    for (const auto& inst : block.Instructions()) {
+        if (inst.GetOpcode() == IR::Opcode::BoundImageAtomicOr32) {
+            ++atomics;
+            CHECK(inst.Arg(0).U32() == 0x210);
+        }
+        CHECK(inst.GetOpcode() != IR::Opcode::BoundImageAtomicIAdd32);
+    }
+    CHECK(atomics == 1);
+}
+
 TEST_CASE("Ocarina LEA.HI subtraction agrees with the Maxwell frontend",
           "[video_core][ampere][oot]") {
     for (const u32 opcode : {0x211U, 0x811U, 0xc11U}) {
