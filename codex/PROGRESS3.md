@@ -39,3 +39,34 @@ Whole compute CFG constructed and all CFG blocks translated to raw IR, including
 three BoundImageAtomicOr32 operations. Optimized translation correctly stops on
 missing storage-pointer context at 0x1c0. No SPIR-V or rendered result claimed.
 C continues. No push or remote access.
+
+B commit: 3e39da8c56. C trial: entire graphics capture lowers to 3072 words.
+The broad prefix analysis changed old conservative regression expectations.
+Narrowed the new gate to require a closed entry-rooted control walk AND the
+canonical unpredicated BRA-to-self immediately after its maximum reachable PC.
+The real capture has that marker at 0x7340. Existing tests without it keep all
+whole-capture checks. Rebuilding and re-running the unchanged existing suites.
+Trial corpus counts: baseline 4, v1 3, G 3, v2 2, v3 0 rejected of 686.
+These trial counts will be rerun after final C validation.
+
+C is green. Both native CALL.REL.NOINC sites use link R2 and the existing
+Maxwell CAL relocation plus RET lowering. Native targets are 0x6f00 and 0x7120;
+return-PC setup is at 0x6290 (for 0x6340) and 0x6340 (for 0x6360).
+No call or return encoding changed. A conservative reachable-prefix analysis
+prevents unrelated post-boundary code from disabling the existing linkage proof.
+All earlier conservative regression tests remain unchanged and pass.
+New captured-word tests keep original PCs and verify CAL displacement, RET,
+link clobber, bypassing setup and reachable indirect-control rejection.
+
+Final C validation:
+build-gather/tests/gather-tests -> All tests passed (581222 assertions in 140 test cases).
+build-gather/round2/frontend-build/ampere-extra-tests -> All tests passed (6840750 assertions in 56 test cases).
+build-gather/tests/gather-tests '[gather]' -> All tests passed (367 assertions in 13 test cases).
+python3 codex/corpus3.py -> baseline 682/4, v1 683/3, G 683/3, v2 684/2, v3 686/0 (lower/reject).
+Both newly accepted outputs reference-decode: 1792 compute words, 3072 graphics.
+The reference disassembler appends a synthetic zero word; exclude that final row.
+Graphics CFG has 3 functions; all blocks translate to raw IR with a synthetic
+mesh stage. Optimization stops on missing live mesh-output topology metadata.
+ISBE attribute/map writes and shuffle/add helpers suggest mesh geometry work;
+a lighting or fog classification is not established.
+D documentation and receipt packaging in progress. No push.
