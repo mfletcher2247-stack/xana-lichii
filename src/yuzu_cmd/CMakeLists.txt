@@ -66,6 +66,10 @@ if(WIN32)
         set_target_properties(yuzu-cmd PROPERTIES LINK_FLAGS_RELEASE "/SUBSYSTEM:WINDOWS /ENTRY:${YUZU_CMD_ENTRY}")
     elseif(MINGW)
         set_target_properties(yuzu-cmd PROPERTIES LINK_FLAGS_RELEASE "-Wl,--subsystem,windows")
+        # vk_host_pacer.cpp reaches DwmGetCompositionTimingInfo through dwmapi. MSVC honours the
+        # file's #pragma comment(lib, "dwmapi.lib"); MinGW ignores it, so the import library has to
+        # be named here. The GUI target already does this in src/yuzu/CMakeLists.txt.
+        target_link_libraries(yuzu-cmd PRIVATE dwmapi)
     endif()
 endif()
 

@@ -79,10 +79,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Xana Hotfix branch: Windows only. The other platforms are unchanged by this
-          # audio patch and their jobs would only queue behind the runner limit.
-          - platform: windows-x86_64
-            runner: windows-2022
+          # Xana Hotfix branch: one Windows build, the MSYS2 clang PGO job, because that is the
+          # shape the official Fritchii v5 Windows zip ships in. The MSVC job is left out: Frizti's
+          # own frizti_settings.cpp trips MSVC /we4459, which is a pre-existing fork defect and not
+          # something this audio hotfix should be rewriting.
           - platform: windows-x86_64-pgo
             runner: windows-2022
             pgo: true
