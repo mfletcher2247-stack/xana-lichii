@@ -48,6 +48,17 @@ else()
     set(IS_NIGHTLY_BUILD false)
 endif()
 
+# Xana Hotfix: dist/xana_hotfix.txt carries a label for locally patched builds, so the log
+# header, the title bar and the About box name them without changing the Fritchii release number.
+set(XANA_HOTFIX_FILE "${CMAKE_SOURCE_DIR}/dist/xana_hotfix.txt")
+if (EXISTS "${XANA_HOTFIX_FILE}")
+    file(STRINGS "${XANA_HOTFIX_FILE}" XANA_HOTFIX LIMIT_COUNT 1)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${XANA_HOTFIX_FILE}")
+    if (XANA_HOTFIX)
+        set(BUILD_VERSION "v${FRIZTI_VERSION} ${XANA_HOTFIX}")
+    endif()
+endif()
+
 if (FRIZTI_VERSION AND NOT LICHII_BUILD_TAG MATCHES "^build-[0-9]+$")
     # Logs keep the commit: "Lichii Frizti vN | <branch>-<commit>".
     string(SUBSTRING ${GIT_COMMIT} 0 10 GIT_DESC)
