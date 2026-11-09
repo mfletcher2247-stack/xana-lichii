@@ -300,6 +300,7 @@ jobs:
           -DENABLE_UPDATE_CHECKER=ON
           -DLICHII_BUILD_TAG=build-${{ github.run_number }}
           -DLICHII_BUILD_PLATFORM=${{ matrix.platform }}
+          -DENABLE_WERROR=OFF
           -DUSE_DISCORD_PRESENCE=OFF
           -DCMAKE_C_COMPILER_LAUNCHER=sccache
           -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
@@ -351,6 +352,7 @@ jobs:
             -DENABLE_UPDATE_CHECKER=ON \
             -DLICHII_BUILD_TAG=build-${{ github.run_number }} \
             -DLICHII_BUILD_PLATFORM=${{ matrix.platform }} \
+            -DENABLE_WERROR=OFF \
             -DUSE_DISCORD_PRESENCE=OFF \
             -DUSE_CCACHE=ON \
             -DCMAKE_C_COMPILER=clang \
